@@ -23,7 +23,7 @@ pacman::p_load(
   )
 
 current_year <- as.integer(format(Sys.Date(), "%Y"))
-years <- 2016:current_year
+years <- 2016:current_year-1
 
 url_pib <- "https://estadisticas.bcrp.gob.pe/estadisticas/series/api/PM04946AA/json"
 
