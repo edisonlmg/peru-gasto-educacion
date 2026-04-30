@@ -137,7 +137,7 @@ education_spending <- education_spending %>%
     EDUCACION_PIB = round(DEVENGADO_EDUCACION/PIB_NOMINAL * 100, 1),
   )
 
-write_csv(education_spending, "peru_gasto_educacion.csv")
+write_csv(education_spending, "data/peru_gasto_educacion.csv")
 
 
 # --- visualizations ---
@@ -157,11 +157,15 @@ fig_educacion_presupuesto <- ggplot(
   # Mostrar todos los periodos en eje x
   scale_x_continuous(breaks = seq(2015, 2026, by = 1)) +
   # Etiquetas de ejes
-  labs(x = "", y = "Porcentaje %")
+  labs(
+    title = "GASTO EN EDUCACIÓN COMO % DEL PRESUPUESTO PÚBLICO TOTAL",
+    x = "", 
+    y = "Porcentaje %"
+    )
 
 fig_educacion_presupuesto
 
-ggsave("fig_educacion_presupuesto.png", fig_educacion_presupuesto)
+ggsave("figures/fig_educacion_presupuesto.png", fig_educacion_presupuesto)
 
 
 fig_educacion_pib <- ggplot(
@@ -176,9 +180,13 @@ fig_educacion_pib <- ggplot(
   # Mostrar todos los periodos en eje x
   scale_x_continuous(breaks = seq(2015, 2025, by = 1)) +
   # Etiquetas de ejes
-  labs(x = "Periodo", y = "Porcentaje %")
+  labs(
+    title = "GASTO EN EDUCACIÓN COMO % DEL PIB",
+    x = "", 
+    y = "Porcentaje %"
+    )
 
 fig_educacion_pib
 
-ggsave("fig_educacion_pib.png", fig_educacion_pib)
+ggsave("figures/fig_educacion_pib.png", fig_educacion_pib)
 
