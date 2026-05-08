@@ -8,8 +8,7 @@
 # =============================================================================
 
 
-# --- Settings ---
-
+# --- instalar y activar librerias ---
 
 if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 pacman::p_load(
@@ -23,28 +22,36 @@ pacman::p_load(
   fs
   )
 
-current_year <- as.integer(format(Sys.Date(), "%Y"))
-years <- 2016:current_year-1
 
+# --- establecer parametros ---
+
+current_year <- as.integer(format(Sys.Date(), "%Y"))
+years <- 2016:(current_year - 1)
+
+
+# --- establecer rutas ---
 
 path_edu_pib_escale <- path("data/B._Recursos_Invertidos_en_Educación-Gasto_público_en_educación_como_porcentaje_del_PBI.xls")
-
 path_edu_share_escale <- path("data/B._Recursos_Invertidos_en_Educación-Gasto_público_en_educación_como_porcentaje_del_gasto_público_total.xls")
+
+
+# --- establecer urls ---
 
 url_pib <- "https://estadisticas.bcrp.gob.pe/estadisticas/series/api/PM04946AA/json"
 
-urls_gasto <- glue(
+urls_spending <- glue(
   "https://fs.datosabiertos.mef.gob.pe/datastorefiles/{years}-Gasto-Devengado",
   "{ifelse(years >= current_year - 1, '-Diario', '')}.csv"
 )
 
 
-# --- load & processing datasets ---
-
+# --- abrir datasets de ESCALE ---
 
 raw_edu_pib_escale <- read_excel(path_edu_pib_escale, skip = 4)
-
 raw_edu_share_escale <- read_excel(path_edu_share_escale, skip = 4)
+
+
+# --- descargar PIB ---
 
 pib <- url_pib %>%
   fromJSON() %>%
@@ -82,6 +89,8 @@ pib <- url_pib %>%
 # =============================================================================
 
 
+# funcion que aplica filtros del Minedu
+
 minedu_filters <- function(df) {
   df %>%
     filter(FUNCION == 22) %>%
@@ -98,23 +107,42 @@ minedu_filters <- function(df) {
 }
 
 
+# funcion que agrega gasto por PIA, PIM y devengado
+
 summarize_spending <- function(df) {
   df %>%
     summarise(
-      PERIODO         = first(ANO_EJE),
-      PIA             = sum(MONTO_PIA,                            na.rm = TRUE),
-      PIM             = sum(MONTO_PIM,                            na.rm = TRUE),
-      DEVENGADO       = sum(MONTO_DEVENGADO_ANUAL,                na.rm = TRUE)
+      PERIODO   = first(ANO_EJE),
+      PIA       = sum(MONTO_PIA,             na.rm = TRUE),
+      PIM       = sum(MONTO_PIM,             na.rm = TRUE),
+      DEVENGADO = sum(MONTO_DEVENGADO_ANUAL, na.rm = TRUE)
     )
 }
 
+
+# funcion que orquesta descargas, filtros y agregacion
 
 processing_file <- function(url) {
   
   dataset_name <- basename(url)
   message("Procesando: ", dataset_name)
   
-  df_raw <- vroom(url, show_col_types = FALSE)
+  # Asignamos el resultado de tryCatch a df_raw
+  df_raw <- tryCatch(
+    expr = {
+      vroom(url, show_col_types = FALSE)
+    },
+    error = function(e) {
+      message("Error en: ", dataset_name, " - ", conditionMessage(e))
+      return(NULL) # Este NULL ahora se asignará a df_raw
+    }
+  )
+  
+  # Ahora esta validación funcionará correctamente
+  if(is.null(df_raw)) {
+    message("Saltando archivo por error previo...")
+    return(NULL)
+  }
   
   total_spending <- summarize_spending(df_raw)
   
@@ -122,30 +150,43 @@ processing_file <- function(url) {
     minedu_filters() %>% 
     summarize_spending()
   
-  total_spending %>%
+  resultado <- total_spending %>%
     left_join(
       edu_spending,
       by = "PERIODO",
       suffix = c("", "_EDUCACION")
     )
+  
+  return(resultado)
 }
 
 
-education_spending <- map_dfr(urls_gasto, processing_file)
+# aplica funcion processing_file a todas las urls de gasto y une un solo df
+
+education_spending <- map(urls_spending, processing_file) %>%
+  bind_rows()
 
 
-# --- transform dataset ---
+# --- procesamiento de datasets ---
 
+
+# Extrae serie de gasto en educacion como % del PIB (nacional)
 
 edu_pib_escale <- raw_edu_pib_escale %>%
   select(-1) %>%
   slice(1) %>%
   unlist()
 
+
+# Extrae serie de gasto en educacion como % del presupuesto publico (nacional)
+
 edu_share_escale <- raw_edu_share_escale %>%
   select(-1) %>%
   slice(1) %>%
   unlist()
+
+
+# Crea variables calculadas y agrega indicadores de ESCALE
 
 education_spending <- education_spending %>%
   left_join(
@@ -159,44 +200,49 @@ education_spending <- education_spending %>%
     EDUCACION_PIB_ESCALE = edu_pib_escale
   )
 
+
+# Guarda el resultado
+
 write_csv(education_spending, "data/peru_gasto_educacion.csv")
 
 
 # --- Comparación de estimaciones ---
 
 
-# 1. Cargar los datos
-# Reemplaza estos valores con tus series reales
-datos <- tibble(
-  Anio = 2018:2023,
-  ESCALE = c(17.5, 17.8, 18.2, 18.0, 18.5, 19.1),
-  Estimacion_Propia = c(16.8, 17.0, 17.1, 17.5, 17.9, 18.4)
-)
+# Calcular RMSE y Correlación de Pearson
 
-# 2. Calcular RMSE y Correlación de Pearson
-metricas <- datos %>%
+metrics <- education_spending %>%
   summarise(
-    RMSE = sqrt(mean((ESCALE - Estimacion_Propia)^2)),
-    Correlacion = cor(ESCALE, Estimacion_Propia, method = "pearson")
+    RMSE_SHARE = sqrt(mean((EDUCACION_PRESUPUESTO_ESCALE - EDUCACION_PRESUPUESTO)^2)),
+    CORR_SHARE = cor(EDUCACION_PRESUPUESTO_ESCALE, EDUCACION_PRESUPUESTO, method = "pearson"),
+    RMSE_PIB   = sqrt(mean((EDUCACION_PIB_ESCALE - EDUCACION_PIB)^2)),
+    CORR_PIB   = cor(EDUCACION_PIB_ESCALE, EDUCACION_PIB, method = "pearson")
   )
 
-# Imprimir los resultados en consola
-print("Métricas de Comparación:")
-print(metricas)
+message("Métricas de Comparación:")
+print(metrics)
 
-# 3. Preparar los límites del gráfico para asegurar proporciones exactas
-min_val <- min(c(datos$ESCALE, datos$Estimacion_Propia)) - 0.5
-max_val <- max(c(datos$ESCALE, datos$Estimacion_Propia)) + 0.5
 
-# 4. Construir el Gráfico de Dispersión (Scatter Plot) con Línea de 45°
-grafico_dispersion <- ggplot(datos, aes(x = ESCALE, y = Estimacion_Propia)) +
-  # Línea de identidad (45 grados) trazada primero para quedar al fondo
+# Grafico de Dispersion para gasto en educacion como % del total
+
+min_val <- min(
+  c(
+    education_spending$EDUCACION_PRESUPUESTO_ESCALE,
+    education_spending$EDUCACION_PRESUPUESTO
+    )
+  ) - 0.5
+
+max_val <- max(
+  c(
+    education_spending$EDUCACION_PRESUPUESTO_ESCALE,
+    education_spending$EDUCACION_PRESUPUESTO
+    )
+  ) + 0.5
+
+fig1_share <- ggplot(datos, aes(x = EDUCACION_PRESUPUESTO_ESCALE, y = EDUCACION_PRESUPUESTO)) +
   geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "#555555", linewidth = 0.8) +
-  # Puntos de dispersión
-  geom_point(color = "#002147", size = 3, alpha = 0.8) + # Tono azul formal/académico
-  # Asegurar que los ejes tengan la misma escala (aspect ratio 1:1)
+  geom_point(color = "#002147", size = 3, alpha = 0.8) +
   coord_fixed(xlim = c(min_val, max_val), ylim = c(min_val, max_val)) +
-  # Etiquetas y títulos
   labs(
     title = "Comparación de Estimaciones de Gasto Público en Educación",
     subtitle = "Reporte ESCALE vs. Estimación Propia (% del Presupuesto)",
@@ -204,29 +250,74 @@ grafico_dispersion <- ggplot(datos, aes(x = ESCALE, y = Estimacion_Propia)) +
     y = "Estimación Propia",
     caption = "Nota: La línea punteada representa la coincidencia perfecta (identidad)."
   ) +
-  # Tema visual formal y sobrio
   theme_bw() +
   theme(
     plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
     plot.subtitle = element_text(size = 11, color = "#333333", hjust = 0.5),
     plot.caption = element_text(size = 9, color = "grey30", hjust = 0.5),
     axis.title = element_text(face = "bold", size = 10),
-    panel.grid.minor = element_blank() # Retirar cuadrícula menor para mayor limpieza
+    panel.grid.minor = element_blank()
   )
 
-# Visualizar el gráfico
-print(grafico_dispersion)
+print(fig1_share)
 
-# Opcional: Guardar el gráfico en alta calidad
-# ggsave("comparacion_escale_propia.png", plot = grafico_dispersion, width = 6, height = 6, dpi = 300)
+ggsave(
+  "figures/comparacion_presupuesto.png",
+  plot = fig1_share,
+  width = 6, 
+  height = 6, 
+  dpi = 300
+  )
 
 
+# Grafico de Dispersion para gasto en educacion como % del PIB
+
+min_val <- min(
+  c(
+    education_spending$EDUCACION_PIB_ESCALE,
+    education_spending$EDUCACION_PIB
+  )
+) - 0.5
+
+max_val <- max(
+  c(
+    education_spending$EDUCACION_PIB_ESCALE,
+    education_spending$EDUCACION_PIB
+  )
+) + 0.5
+
+fig2_pib <- ggplot(education_spending, aes(x = EDUCACION_PIB_ESCALE, y = EDUCACION_PIB)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "#555555", linewidth = 0.8) +
+  geom_point(color = "#002147", size = 3, alpha = 0.8) +
+  coord_fixed(xlim = c(min_val, max_val), ylim = c(min_val, max_val)) +
+  labs(
+    title = "Comparación de Estimaciones de Gasto Público en Educación",
+    subtitle = "Reporte ESCALE vs. Estimación Propia (% del PIB)",
+    x = "Estimación ESCALE (Minedu)",
+    y = "Estimación Propia",
+    caption = "Nota: La línea punteada representa la coincidencia perfecta (identidad)."
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 11, color = "#333333", hjust = 0.5),
+    plot.caption = element_text(size = 9, color = "grey30", hjust = 0.5),
+    axis.title = element_text(face = "bold", size = 10),
+    panel.grid.minor = element_blank()
+  )
+
+print(fig2_pib)
+
+ggsave(
+  "figures/comparacion_pib.png",
+  plot = fig2_pib,
+  width = 6, 
+  height = 6, 
+  dpi = 300
+)
 
 
 # --- visualizations ---
-
-
-
 
 
 fig_educacion_presupuesto <- ggplot(
